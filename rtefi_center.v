@@ -1,0 +1,386 @@
+// Full RTEFI Rx/Tx pipeline
+//
+// Ports are abstract GMII (maybe should adjust their names?).
+// Non-GMII hardware can and should add an adapter layer to get
+// from GMII to RGMII or the MGT.  Actual GMII hardware can just
+// connect these ports to the physical pins.
+//
+// Up to seven clients, each handling a UDP port, attach here.
+//
+// This module instantiates a series of modules for the data path
+// linking GMII Rx through to GMII Tx, shown in doc/rtefi.eps.
+// The several steps have instance names starting with a through e
+// (a_scan through e_crc).
+//
+module rtefi_center #(
+	parameter paw = 11,  // packet (memory) address width, nominal 11
+	parameter n_lat = 3,  // latency of client pipeline
+	parameter mac_aw = 10,  // sets size (in 16-bit words) of DPRAM in Tx MAC
+	parameter handle_arp = 1,
+	parameter handle_icmp = 1,
+	// The following parameters set the synthesis-time default, but all
+	// can be overridden at run-time using the configuration port.
+	// UDP ports 0 through 7 represent the index given in udp_sel.
+	// While udp_port_cam.v is written parameterized, we limit it to
+	// three bits and 8 ports for timing reasons.  Port 0 is internally
+	// implemented as echo; the rest will be user-defined via synthesis-time
+	// plug-ins.  Generally the UDP port numbers should be "well known",
+	// but the case can be made to have them run-time override-able (without
+	// resynthesizing) to help cope with unexpected network issues.
+	// When a udp_port number is set to 0, that port is disabled.
+	parameter [31:0] ip = {8'd192, 8'd168, 8'd7, 8'd4},  // 192.168.7.4
+	parameter [47:0] mac = 48'h12555500012d,
+	parameter udp_port0 = 7,
+	parameter udp_port1 = 801,
+	parameter udp_port2 = 802,
+	parameter udp_port3 = 803,
+	parameter udp_port4 = 0,
+	parameter udp_port5 = 0,
+	parameter udp_port6 = 0,
+	parameter udp_port7 = 0
+) (
+	// GMII Input (Rx)
+	input rx_clk,
+	input [7:0] rxd,
+	input rx_dv,
+	input rx_er,
+	// GMII Output (Tx)
+	input tx_clk,
+	output [7:0] txd,
+	output tx_en,
+	// Configuration
+	// When changing configuration (like IP) at run time with these ports,
+	// it's recommended to turn off enable_rx during that process.
+	input enable_rx,
+	input config_clk,
+	input [3:0] config_a,
+	input [7:0] config_d,
+	input config_s,  // MAC/IP address write
+	input config_p,  // UDP port number write
+	// Host side of Tx MAC
+	// connect the 2 below to an external 16 bit dual port ram
+	output [mac_aw - 1: 0] host_raddr,
+	input [15:0] host_rdata,
+	// address where we should start transmitting from
+	input [mac_aw - 1: 0] buf_start_addr,
+	// set start to trigger transmission, wait for done, reset start
+	input tx_mac_start,
+	output tx_mac_done,
+	// As documented in doc/clients.eps
+	output [10:0] len_c,
+	output [6:0] raw_l,
+	output [6:0] raw_s,
+	output [7:0] idata,
+	input [7*8-1:0] mux_data_in,  // collection of odata
+	// port to Rx MAC memory
+	output [7:0] rx_mac_d,
+	output [11:0] rx_mac_a,
+	output rx_mac_wen,
+	// port to Rx MAC handshake
+	input rx_mac_hbank,
+	output [1:0] rx_mac_buf_status,
+	// port to Rx MAC packet selector
+	input rx_mac_accept,
+	output [7:0] rx_mac_status_d,
+	output rx_mac_status_s,
+	// Debugging
+	output ibadge_stb,
+	output [7:0] ibadge_data,
+	output obadge_stb,
+	output [7:0] obadge_data,
+	output xdomain_fault,
+	// Dumb stuff to get LEDs blinking
+	output [3:0] scanner_debug,
+	output rx_mon,
+	output tx_mon,
+	// Scanner busy for stream_tx
+	output scanner_busy,
+	// Badger TX active - stream_tx must yield when this is high
+	output badger_tx_active,   // HIGH when Badger is transmitting (xraw2_l)
+	// Response pending - HIGH when gateway responses are in flight
+	output response_pending,
+	// External TX injection (stream_tx)
+	input [7:0] ext_tx_data,
+	input ext_tx_strobe_s,
+	input ext_tx_strobe_l,
+	// Debug inputs from stream_tx
+	input dbg_stream_clear_to_send,
+	input dbg_stream_request_to_send,
+	input dbg_stream_payload_ready,
+	input [2:0] dbg_stream_state,
+	// Debug outputs
+	output [31:0] dbg_collision_count,
+	// Simulation-only
+	output in_use
+);
+
+// Overhead: make sure the tools can create an IOB on all GMII inputs
+reg [7:0] eth_in_r=0;
+reg eth_in_s_r=0, eth_in_e_r=0;
+always @(posedge rx_clk) begin
+	eth_in_r <= rxd;
+	eth_in_s_r <= rx_dv;
+	eth_in_e_r <= rx_er;
+end
+
+// First real step: scan the input packet
+wire [3:0] ip_a;  reg [7:0] ip_d=0;  // MAC/IP config, Rx side
+wire [3:0] pno_a; reg [7:0] pno_d=0;  // UDP port numbers
+wire [7:0] sdata;
+// scanner_busy is now an output port
+wire sdata_s, sdata_l;
+wire [10:0] pack_len;
+wire [7:0] status_vec; wire status_valid;
+scanner #(.handle_arp(handle_arp), .handle_icmp(handle_icmp)) a_scan(
+	.clk(rx_clk),
+	.eth_in(eth_in_r), .eth_in_s(eth_in_s_r), .eth_in_e(eth_in_e_r),
+	.enable_rx(enable_rx),
+	.ip_a(ip_a), .ip_d(ip_d),
+	.pno_a(pno_a), .pno_d(pno_d),
+	.busy(scanner_busy), .debug(scanner_debug),
+	.odata(sdata), .odata_s(sdata_s), .odata_f(sdata_l),
+	.pack_len(pack_len), .status_vec(status_vec), .status_valid(status_valid)
+);
+assign rx_mac_status_d = status_vec;
+assign rx_mac_status_s = status_valid;
+`ifdef SIMULATE
+// always @(negedge rx_clk) if (status_valid) $display("Rx scanner status %x", status_vec);
+`endif
+
+// Second step: create data flow to DPRAM
+wire [paw-1:0] pbuf_a_rx, gray_state;
+wire [8:0] pbuf_din;
+pbuf_writer #(.paw(paw)) b_write(.clk(rx_clk),
+	.data_in(sdata), .data_s(sdata_s), .data_f(sdata_l),
+	.pack_len(pack_len), .status_vec(status_vec), .status_valid(status_valid),
+	.mem_a(pbuf_a_rx), .mem_d(pbuf_din),
+	.rx_mac_d(rx_mac_d), .rx_mac_a(rx_mac_a), .rx_mac_wen(rx_mac_wen),
+	.rx_mac_hbank(rx_mac_hbank), .rx_mac_buf_status(rx_mac_buf_status),
+	.rx_mac_accept(rx_mac_accept),
+	.gray_state(gray_state),
+	.badge_stb(ibadge_stb)
+);
+assign ibadge_data = pbuf_din[7:0];
+
+// 1 MTU DPRAM; note the ninth bit used to mark Start of Frame.
+// Also note the lack of a write-enable; just write every cycle.
+// I hate jumbo frames.  Expect paw=11, so memory is big enough to hold 1500 MTU.
+reg [8:0] pbuf[0:(1<<paw)-1];
+reg [8:0] pbuf_out=0;
+wire [paw-1:0] mem_a2;  // see below
+always @(posedge rx_clk) pbuf[pbuf_a_rx] <= pbuf_din;
+always @(posedge tx_clk) pbuf_out <= pbuf[mem_a2];
+integer jx;
+initial for (jx=0; jx<(1<<paw); jx=jx+1) pbuf[jx]=0;
+
+// Third step: sift through that packet's data to
+// synthesize the reply packet's header
+wire [3:0] ip_mem_a_tx;  reg[7:0] ip_mem_d_tx=0;  // MAC/IP config, Tx side
+// Signals sent from construct to xformer
+wire [5:0] pc;
+wire [1:0] category;
+wire [2:0] udp_sel;
+wire [7:0] eth_data_out;
+wire eth_strobe_short, eth_strobe_long;
+localparam p_offset=480;  // see notes in construct.v
+construct #(.paw(paw), .p_offset(p_offset)) c_construct(.clk(tx_clk),
+	.gray_state(gray_state),
+	.ip_a(ip_mem_a_tx), .ip_d(ip_mem_d_tx),
+	.addr(mem_a2), .pbuf_out(pbuf_out),
+	.pc(pc), .category(category), .udp_sel(udp_sel),
+	.badge_stb(obadge_stb), .badge_data(obadge_data),
+	.xdomain_fault(xdomain_fault),
+	.eth_data_out(eth_data_out), .eth_strobe_short(eth_strobe_short), .eth_strobe_long(eth_strobe_long)
+);
+
+// Data multiplexer
+wire xraw_s, xraw_l;  wire [7:0] raw_d;  // Output, still needs CRC
+xformer #(.n_lat(n_lat), .handle_icmp(handle_icmp)) d_xform(.clk(tx_clk),
+	.pc(pc), .category(category), .udp_sel(udp_sel),
+	.idata(eth_data_out), .eth_strobe_short(eth_strobe_short), .eth_strobe_long(eth_strobe_long),
+	.len_c(len_c),
+	.raw_l(raw_l), .raw_s(raw_s),
+	.mux_data_in(mux_data_in),
+	.odata(raw_d), .ostrobe_s(xraw_s), .ostrobe_l(xraw_l)
+);
+assign idata = eth_data_out;
+
+// Tx MAC
+// Disable by setting mac_aw=1
+// precog_latency is kind of important;
+// check resulting interpacket gap in simulations
+localparam precog_latency = (1<<paw) - p_offset + 4 + n_lat;
+wire [7:0] tx_mac_data;
+wire tx_mac_strobe_s, tx_mac_strobe_l;
+generate if (mac_aw > 1) begin : mac_b
+    mac_subset #(
+	.mac_aw(mac_aw),
+	.latency(precog_latency)
+    ) txmac (
+	.host_raddr(host_raddr),
+	.host_rdata(host_rdata),
+	.buf_start_addr(buf_start_addr),
+	.tx_mac_start(tx_mac_start),
+	.tx_mac_done(tx_mac_done),
+	.scanner_busy(scanner_busy),
+	.tx_clk(tx_clk),
+	.mac_data(tx_mac_data),
+	.strobe_s(tx_mac_strobe_s),
+	.strobe_l(tx_mac_strobe_l)
+    );
+end else begin : no_mac_b
+	assign tx_mac_strobe_s = 0;
+	assign tx_mac_strobe_l = 0;
+	assign tx_mac_data = 0;
+end endgenerate
+
+// Slide data from Tx MAC in here
+// XXX no cross-checking that the MAC is avoiding collisions
+// using precog the way it's supposed to.
+wire xraw2_s = xraw_s | tx_mac_strobe_s;
+wire xraw2_l = xraw_l | tx_mac_strobe_l;
+wire [7:0] raw2_d = tx_mac_strobe_s ? tx_mac_data : raw_d;
+
+// Badger TX active signal for stream_tx priority
+// This is HIGH when either xformer (gateway responses) or tx_mac is transmitting
+assign badger_tx_active = xraw2_l;
+
+// ============================================================================
+// Response Pending Counter
+// ============================================================================
+// Track gateway responses in flight through the ring buffer.
+// This prevents stream_tx from claiming gaps while responses are pending.
+//
+// - will_respond: pulses when scanner completes a packet that will generate a response
+//   (category != 0 means ARP, ICMP, or UDP - all generate responses)
+// - gateway_tx_done: pulses when gateway response finishes transmitting
+//   (falling edge of xraw2_l, which is a packet-level signal)
+// ============================================================================
+
+// Detect when a packet is scanned that will generate a response
+// status_vec[1:0] = category: 0=other, 1=ARP, 2=ICMP, 3=UDP
+wire will_respond = status_valid && (status_vec[1:0] != 2'b00);
+
+// Detect falling edge of xraw2_l (gateway TX complete)
+reg xraw2_l_d = 0;
+always @(posedge tx_clk) xraw2_l_d <= xraw2_l;
+wire gateway_tx_done = xraw2_l_d && ~xraw2_l;
+
+// Counter for responses in flight through the ring buffer
+// Note: rx_clk and tx_clk are both clk_12p5mhz in this design, no CDC needed
+reg [3:0] pending_response_count = 0;
+always @(posedge tx_clk) begin
+	case ({will_respond, gateway_tx_done})
+		2'b10:   pending_response_count <= pending_response_count + 1;
+		2'b01:   if (pending_response_count != 0)  // prevent underflow
+		             pending_response_count <= pending_response_count - 1;
+		default: pending_response_count <= pending_response_count;
+	endcase
+end
+
+// Response pending signal for stream_tx
+assign response_pending = (pending_response_count != 0);
+
+// Collision detector - for debugging, should never fire if logic is correct
+wire stream_tx_active = ext_tx_strobe_l;
+wire collision_detected = xraw2_l && stream_tx_active;  // both trying to TX
+
+// Collision counter - counts rising edges of collision_detected
+reg collision_detected_d = 0;
+reg [31:0] collision_count = 0;
+always @(posedge tx_clk) begin
+    collision_detected_d <= collision_detected;
+    if (collision_detected && !collision_detected_d)
+        collision_count <= collision_count + 1;
+end
+
+// Add external TX injection (stream_tx) - lowest priority
+// ext_tx already includes preamble and expects CRC to be added
+// Gateway/MAC (xraw2) has priority over stream_tx for data mux
+//
+// CRITICAL: Gate stream_tx strobes when Badger is active to prevent CRC corruption.
+// The ethernet_crc_add module uses edge detection (first_crc = raw_s & ~raw_s_d).
+// If both sources have strobes high simultaneously, no rising edge is detected
+// and CRC calculation continues from one packet into another = corrupted CRC.
+// By gating stream_tx strobes, we ensure a clean falling edge (stream ends)
+// followed by a clean rising edge (gateway starts) for proper CRC reset.
+wire stream_tx_gate = ~xraw2_l;  // Stream only when Badger not transmitting
+wire xraw3_s = xraw2_s | (ext_tx_strobe_s & stream_tx_gate);
+wire xraw3_l = xraw2_l | (ext_tx_strobe_l & stream_tx_gate);
+wire [7:0] raw3_d = xraw2_s ? raw2_d : ext_tx_data;  // Gateway wins on collision
+
+// Finally, add Ethernet CRC and GMII preamble
+wire opack_s;  wire [7:0] opack_d;
+ethernet_crc_add e_crc(.clk(tx_clk),
+	.raw_s(xraw3_s), .raw_l(xraw3_l), .raw_d(raw3_d),
+	.opack_s(opack_s), .opack_d(opack_d)
+);
+
+// Make sure these outputs can be put into an IOB
+reg [7:0] eth_out_r=0;
+reg eth_out_s_r=0;
+always @(posedge tx_clk) begin
+	eth_out_r <= opack_d;
+	eth_out_s_r <= opack_s;
+end
+assign txd = eth_out_r;
+assign tx_en = eth_out_s_r;
+
+// Has to be distinct from the IOBs
+assign rx_mon = eth_in_s_r;
+assign tx_mon = opack_s;
+
+// Hook for testing; not intended to be connected in hardware
+reg [paw-1:0] in_use_timer=0;
+assign in_use = |in_use_timer;
+always @(posedge rx_clk) begin
+	if (in_use) in_use_timer <= in_use_timer - 1;
+	if (rx_mon) in_use_timer <= {paw{1'b1}};
+end
+
+// Memory for MAC/IP addresses
+reg [7:0] ip_mem[0:15];
+always @(posedge config_clk) if (config_s) ip_mem[config_a] <= config_d;
+always @(posedge rx_clk) ip_d <= ip_mem[ip_a];
+always @(posedge tx_clk) ip_mem_d_tx <= ip_mem[ip_mem_a_tx];
+initial begin
+	// Matches packets in at least arp3.dat, icmp3.dat, udp3.dat.
+	ip_mem[0] = mac[47:40];  // Start of MAC
+	ip_mem[1] = mac[39:32];
+	ip_mem[2] = mac[31:24];
+	ip_mem[3] = mac[23:16];
+	ip_mem[4] = mac[15:8];
+	ip_mem[5] = mac[7:0];  // End of MAC
+	ip_mem[6] = ip[31:24];  // Start of IP
+	ip_mem[7] = ip[23:16];
+	ip_mem[8] = ip[15:8];
+	ip_mem[9] = ip[7:0];  // End of IP
+end
+
+// Memory for UDP port numbers
+reg [7:0] pno_mem[0:15];
+always @(posedge config_clk) if (config_p) pno_mem[config_a] <= config_d;
+always @(posedge rx_clk) pno_d <= pno_mem[pno_a];
+initial begin
+	pno_mem[0] = udp_port0[15:8];
+	pno_mem[1] = udp_port0[7:0];
+	pno_mem[2] = udp_port1[15:8];
+	pno_mem[3] = udp_port1[7:0];
+	pno_mem[4] = udp_port2[15:8];
+	pno_mem[5] = udp_port2[7:0];
+	pno_mem[6] = udp_port3[15:8];
+	pno_mem[7] = udp_port3[7:0];
+	pno_mem[8] = udp_port4[15:8];
+	pno_mem[9] = udp_port4[7:0];
+	pno_mem[10] = udp_port5[15:8];
+	pno_mem[11] = udp_port5[7:0];
+	pno_mem[12] = udp_port6[15:8];
+	pno_mem[13] = udp_port6[7:0];
+	pno_mem[14] = udp_port7[15:8];
+	pno_mem[15] = udp_port7[7:0];
+end
+
+// Debug output assignments
+assign dbg_collision_count = collision_count;
+
+endmodule

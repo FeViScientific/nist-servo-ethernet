@@ -1,0 +1,355 @@
+############################################################################
+# XEM6010 - Incremental Ethernet build constraints (ADC + DAC + Servo)
+############################################################################
+CONFIG VCCAUX = "3.3";
+
+NET "clk1_in"       LOC="AB13" | IOSTANDARD="LVCMOS33";
+NET "clk1_in"       TNM_NET = "SYS_CLK1";
+TIMESPEC "TS_SYS_CLK1" = PERIOD "SYS_CLK1" 10 ns HIGH 50%;
+
+# RMII PHY
+NET "phy_txd[1]"   LOC=C22 | IOSTANDARD=LVCMOS33 | DRIVE=12 | SLEW=SLOW;
+NET "phy_txd[0]"   LOC=C20 | IOSTANDARD=LVCMOS33 | DRIVE=12 | SLEW=SLOW;
+NET "phy_tx_en"    LOC=E22 | IOSTANDARD=LVCMOS33 | DRIVE=12 | SLEW=SLOW;
+NET "phy_clk_out"  LOC=E20 | IOSTANDARD=LVCMOS33 | DRIVE=12 | SLEW=FAST;
+NET "phy_crs_dv"   LOC=H22 | IOSTANDARD=LVCMOS33;
+NET "phy_rxd[0]"   LOC=F21 | IOSTANDARD=LVCMOS33;
+NET "phy_rxd[1]"   LOC=F22 | IOSTANDARD=LVCMOS33;
+
+############################################################################
+## DSP clock (25 MHz, derived from clk1 by divide-by-4)
+############################################################################
+NET "clk_dsp" TNM_NET = "CLK_DSP";
+TIMESPEC "TS_CLK_DSP" = PERIOD "CLK_DSP" 40 ns HIGH 50%;
+
+############################################################################
+## Digital I/O
+############################################################################
+NET "DIN[0]"    LOC=M20  | IOSTANDARD=LVCMOS33;
+NET "DIN[1]"    LOC=D21  | IOSTANDARD=LVCMOS33;
+NET "DIN[2]"    LOC=L20  | IOSTANDARD=LVCMOS33;
+NET "DOUT[0]"   LOC=A20  | IOSTANDARD=LVCMOS33;
+NET "DOUT[1]"   LOC=L22  | IOSTANDARD=LVCMOS33;
+NET "DOUT[2]"   LOC=M22  | IOSTANDARD=LVCMOS33;
+
+NET "LED_G[0]"  LOC=J20  | IOSTANDARD=LVCMOS33;
+NET "LED_G[1]"  LOC=B22  | IOSTANDARD=LVCMOS33;
+NET "LED_G[2]"  LOC=D22  | IOSTANDARD=LVCMOS33;
+NET "LED_R[0]"  LOC=J22  | IOSTANDARD=LVCMOS33;
+NET "LED_R[1]"  LOC=A21  | IOSTANDARD=LVCMOS33;
+NET "LED_R[2]"  LOC=B21  | IOSTANDARD=LVCMOS33;
+
+############################################################################
+## Input PGA (AD8251)
+############################################################################
+NET "AD8251_IN_A0"   LOC=G16  | IOSTANDARD=LVCMOS33;
+NET "AD8251_IN_A1"   LOC=G17  | IOSTANDARD=LVCMOS33;
+NET "AD8251_IN_WR0"  LOC=H19  | IOSTANDARD=LVCMOS33;
+NET "AD8251_IN_WR1"  LOC=H18  | IOSTANDARD=LVCMOS33;
+
+############################################################################
+## LTC2195 ADC (2x 16-bit @ 100 MSPS)
+############################################################################
+NET "LTC2195_SCS"   LOC=P21  | IOSTANDARD=LVCMOS33;
+NET "LTC2195_SCK"   LOC=T22  | IOSTANDARD=LVCMOS33;
+NET "LTC2195_SDI"   LOC=T21  | IOSTANDARD=LVCMOS33;
+NET "LTC2195_SDO"   LOC=G19  | IOSTANDARD=LVCMOS33;
+
+NET "LTC2195_ENC_P"     LOC=B18  | IOSTANDARD=LVDS_25;
+NET "LTC2195_ENC_N"     LOC=A18  | IOSTANDARD=LVDS_25;
+
+NET "LTC2195_FR_P"      LOC=U20  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_FR_N"      LOC=U22  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+
+NET "LTC2195_DCO_P"     LOC=K20  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_DCO_N"     LOC=K19  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+
+NET "LTC2195_D0_P[0]"   LOC=H20  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D0_P[1]"   LOC=D19  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D0_P[2]"   LOC=F18  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D0_P[3]"   LOC=M16  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+
+NET "LTC2195_D0_N[0]"   LOC=J19  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D0_N[1]"   LOC=D20  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D0_N[2]"   LOC=F19  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D0_N[3]"   LOC=L15  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+
+NET "LTC2195_D1_P[0]"   LOC=R20  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D1_P[1]"   LOC=N20  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D1_P[2]"   LOC=K21  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D1_P[3]"   LOC=G20  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+
+NET "LTC2195_D1_N[0]"   LOC=R22  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D1_N[1]"   LOC=N22  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D1_N[2]"   LOC=K22  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+NET "LTC2195_D1_N[3]"   LOC=G22  | IOSTANDARD=LVDS_33 | DIFF_TERM=TRUE;
+
+# LEDs
+NET "led[0]"     LOC="Y17"  | IOSTANDARD=LVCMOS33;
+NET "led[1]"     LOC="AB17" | IOSTANDARD=LVCMOS33;
+NET "led[2]"     LOC="AA14" | IOSTANDARD=LVCMOS33;
+NET "led[3]"     LOC="AB14" | IOSTANDARD=LVCMOS33;
+NET "led[4]"     LOC="AA16" | IOSTANDARD=LVCMOS33;
+NET "led[5]"     LOC="AB16" | IOSTANDARD=LVCMOS33;
+NET "led[6]"     LOC="AA10" | IOSTANDARD=LVCMOS33;
+NET "led[7]"     LOC="AB10" | IOSTANDARD=LVCMOS33;
+
+############################################################################
+## AD9783 Fast DAC (2x 16-bit @ 100 MSPS)
+############################################################################
+NET "AD9783_RST"   LOC=K16 | IOSTANDARD=LVCMOS33;
+NET "AD9783_SCS"   LOC=K17 | IOSTANDARD=LVCMOS33;
+NET "AD9783_SCK"   LOC=J17 | IOSTANDARD=LVCMOS33;
+NET "AD9783_SDO"   LOC=F16 | IOSTANDARD=LVCMOS33;
+NET "AD9783_SDI"   LOC=F17 | IOSTANDARD=LVCMOS33;
+
+NET "AD9783_CLK_P"   LOC=C5  | IOSTANDARD=LVDS_25;
+NET "AD9783_CLK_N"   LOC=A5  | IOSTANDARD=LVDS_25;
+
+NET "AD9783_DCI_P"   LOC=B6  | IOSTANDARD=LVDS_25;
+NET "AD9783_DCI_N"   LOC=A6  | IOSTANDARD=LVDS_25;
+
+NET "AD9783_D_P[0]"   LOC=C17 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[1]"   LOC=B16 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[2]"   LOC=C15 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[3]"   LOC=B14 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[4]"   LOC=C13 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[5]"   LOC=C9  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[6]"   LOC=C7  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[7]"   LOC=B8  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[8]"   LOC=A3  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[9]"   LOC=D11 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[10]"  LOC=D10 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[11]"  LOC=D6  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[12]"  LOC=D9  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[13]"  LOC=D7  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[14]"  LOC=E16 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_P[15]"  LOC=D14 | IOSTANDARD=LVDS_25;
+
+NET "AD9783_D_N[0]"   LOC=A17 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[1]"   LOC=A16 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[2]"   LOC=A15 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[3]"   LOC=A14 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[4]"   LOC=A13 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[5]"   LOC=A9  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[6]"   LOC=A7  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[7]"   LOC=A8  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[8]"   LOC=A4  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[9]"   LOC=C12 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[10]"  LOC=C10 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[11]"  LOC=C6  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[12]"  LOC=C8  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[13]"  LOC=D8  | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[14]"  LOC=D17 | IOSTANDARD=LVDS_25;
+NET "AD9783_D_N[15]"  LOC=C14 | IOSTANDARD=LVDS_25;
+
+############################################################################
+## AD5791 Precision DAC (20-bit)
+############################################################################
+NET "AD5791_SCS"   LOC=T19  | IOSTANDARD=LVCMOS33;
+NET "AD5791_SCK"   LOC=T20  | IOSTANDARD=LVCMOS33;
+NET "AD5791_SDI"   LOC=P17  | IOSTANDARD=LVCMOS33;
+NET "AD5791_SDO"   LOC=N16  | IOSTANDARD=LVCMOS33;
+NET "AD5791_LDAC"  LOC=P18  | IOSTANDARD=LVCMOS33;
+NET "AD5791_CLR"   LOC=M18  | IOSTANDARD=LVCMOS33;
+NET "AD5791_RST"   LOC=M17  | IOSTANDARD=LVCMOS33;
+
+############################################################################
+## M25P32 configuration flash (raw SPI transport for non-volatile config)
+## LOCs from the original Opal Kelly XEM6010 UCF. flash_sdi = MOSI (FPGA->
+## flash), flash_sdo = MISO (flash->FPGA).
+############################################################################
+NET "flash_scs"  LOC="T5"   | IOSTANDARD="LVCMOS33";
+NET "flash_sck"  LOC="W12"  | IOSTANDARD="LVCMOS33";
+NET "flash_sdi"  LOC="AB15" | IOSTANDARD="LVCMOS33";
+NET "flash_sdo"  LOC="Y15"  | IOSTANDARD="LVCMOS33";
+
+############################################################################
+## Output PGA (AD8251)
+############################################################################
+NET "AD8251_OUT_A0"   LOC=V21  | IOSTANDARD=LVCMOS33;
+NET "AD8251_OUT_A1"   LOC=P22  | IOSTANDARD=LVCMOS33;
+NET "AD8251_OUT_WR0"  LOC=M21  | IOSTANDARD=LVCMOS33;
+NET "AD8251_OUT_WR1"  LOC=J16  | IOSTANDARD=LVCMOS33;
+
+############################################################################
+## PLL placement
+############################################################################
+INST "AD9783_inst/pll_base_inst/PLL_ADV"  LOC = "PLL_ADV_X0Y3";
+INST "LTC2195_inst/pll_base_inst/PLL_ADV" LOC = "PLL_ADV_X0Y0";
+
+############################################################################
+## CDC: quasi-static registers (clk_12p5mhz -> clk1 / clk_dsp)
+############################################################################
+# DAC value registers
+NET "dac0_value*" TIG;
+NET "dac1_value*" TIG;
+NET "dac2_value*" TIG;
+NET "dac_gain*" TIG;
+NET "ramp_enable" TIG;
+
+# SPI command interface
+NET "cmd_trig_pending" TIG;
+NET "spi_cmd_addr*" TIG;
+NET "spi_cmd_data*" TIG;
+NET "spi_readback*" TIG;
+NET "trig_sync*" TIG;
+NET "trig_done_sync*" TIG;
+
+# SPI diagnostics
+NET "ad5791_spi_count*" TIG;
+NET "ad9783_spi_count*" TIG;
+
+# DOUT source select (lbus clk_12p5mhz -> clk1 quasi-static CDC; reg 0x022)
+NET "dout_src*" TIG;
+
+# ADC config
+NET "adc_gain*" TIG;
+NET "iir_enable*" TIG;
+NET "iir_a1*" TIG;
+NET "iir_b0*" TIG;
+NET "iir_b1*" TIG;
+
+# Servo channel config (lbus clk_12p5mhz -> clk_dsp quasi-static CDC)
+NET "ch_servo_on*" TIG;
+NET "ch_input_mux*" TIG;
+NET "ch_offset*" TIG;
+NET "ch_limit_min*" TIG;
+NET "ch_limit_max*" TIG;
+NET "ch_limit_center*" TIG;
+NET "ch_iir0*" TIG;
+NET "ch_iir1*" TIG;
+NET "ch_iir2*" TIG;
+NET "ch_iir3*" TIG;
+NET "ch_sweep*" TIG;
+NET "ch_relock*" TIG;
+NET "ch_hold_source*" TIG;
+NET "ch_delay*" TIG;
+NET "ch_lo_shift*" TIG;
+
+# LockIn config (lbus clk_12p5mhz -> clk_dsp)
+NET "li_input_sel" TIG;
+NET "li_pinc*" TIG;
+NET "li_poff*" TIG;
+NET "li_iir0*" TIG;
+NET "li_iir1*" TIG;
+
+# PhaseDetector config (lbus clk_12p5mhz -> clk_dsp)
+NET "pd_input_sel" TIG;
+NET "pd_use_ext_clk" TIG;
+NET "pd_pinc*" TIG;
+NET "pd_lp*" TIG;
+
+# TransferFunction (shared SPI interface, already covered by spi_cmd_*)
+NET "spi_cmd_data2*" TIG;
+
+############################################################################
+## PhaseDetector multicycle constraints
+############################################################################
+INST "PhaseDetector_inst/Mmult_pinc_f1*" TNM = "PHDET_MULT";
+INST "PhaseDetector_inst/Mshreg_pinc*" TNM = "PHDET_PINC_REG";
+TIMESPEC "TS_PHDET_MULT" = FROM "PHDET_MULT" TO "PHDET_MULT" 20 ns;
+TIMESPEC "TS_PHDET_MULT_OUT" = FROM "PHDET_MULT" TO "PHDET_PINC_REG" 20 ns;
+
+# Stream TX CDC: sample buffer handshake (clk1 -> clk_12p5mhz)
+NET "samples_valid" TIG;
+NET "sample_buffer*" TIG;
+NET "stream_tx_inst/samples_read" TIG;
+
+# DDR2Logger CDC and timing constraints
+NET "Logger2/RAMinputbuffer_fifo/BU2/U0/grf.rf/gcx.clkx/*" TIG;
+NET "Logger2/reset_f" TIG;
+
+# Async-assert source of the per-domain reset synchronizers. Only the async
+# deassert path is ignored here; the synchronous per-domain reset outputs (rst,
+# rst_50, rst_125, rst_dsp) are timed normally so each releases cleanly in phase
+# with its own clock (fixes the intermittent "comes up dead" startup race).
+NET "por_or_unlocked" TIG;
+
+############################################################################
+## DDR2 Memory Controller (MCB3)
+############################################################################
+CONFIG MCB_PERFORMANCE= STANDARD;
+
+# MCB CDC timing - safe by design
+NET "Logger2/memc?_wrapper_inst/memc?_mcb_raw_wrapper_inst/selfrefresh_mcb_mode" TIG;
+NET "Logger2/c?_pll_lock" TIG;
+NET "Logger2/memc?_wrapper_inst/memc?_mcb_raw_wrapper_inst/gen_term_calib.mcb_soft_calibration_top_inst/mcb_soft_calibration_inst/CKE_Train" TIG;
+
+# I/O Termination
+NET "mcb3_dram_dq[*]"      IN_TERM = NONE;
+NET "mcb3_dram_dqs"        IN_TERM = NONE;
+NET "mcb3_dram_dqs_n"      IN_TERM = NONE;
+NET "mcb3_dram_udqs"       IN_TERM = NONE;
+NET "mcb3_dram_udqs_n"     IN_TERM = NONE;
+
+# I/O Standards
+NET "mcb3_dram_dq[*]"     IOSTANDARD = SSTL18_II;
+NET "mcb3_dram_a[*]"      IOSTANDARD = SSTL18_II;
+NET "mcb3_dram_ba[*]"     IOSTANDARD = SSTL18_II;
+NET "mcb3_dram_dqs"       IOSTANDARD = DIFF_SSTL18_II;
+NET "mcb3_dram_udqs"      IOSTANDARD = DIFF_SSTL18_II;
+NET "mcb3_dram_dqs_n"     IOSTANDARD = DIFF_SSTL18_II;
+NET "mcb3_dram_udqs_n"    IOSTANDARD = DIFF_SSTL18_II;
+NET "mcb3_dram_ck"        IOSTANDARD = DIFF_SSTL18_II;
+NET "mcb3_dram_ck_n"      IOSTANDARD = DIFF_SSTL18_II;
+NET "mcb3_dram_cke"       IOSTANDARD = SSTL18_II;
+NET "mcb3_dram_ras_n"     IOSTANDARD = SSTL18_II;
+NET "mcb3_dram_cas_n"     IOSTANDARD = SSTL18_II;
+NET "mcb3_dram_we_n"      IOSTANDARD = SSTL18_II;
+NET "mcb3_dram_odt"       IOSTANDARD = SSTL18_II;
+NET "mcb3_dram_dm"        IOSTANDARD = SSTL18_II;
+NET "mcb3_dram_udm"       IOSTANDARD = SSTL18_II;
+NET "mcb3_rzq"            IOSTANDARD = SSTL18_II;
+NET "mcb3_zio"            IOSTANDARD = SSTL18_II;
+NET "mcb3_dram_cs_n"      IOSTANDARD = LVCMOS18;
+
+# MCB3 Pin Locations
+NET "mcb3_dram_a[0]"       LOC = "H2";
+NET "mcb3_dram_a[1]"       LOC = "H1";
+NET "mcb3_dram_a[2]"       LOC = "H5";
+NET "mcb3_dram_a[3]"       LOC = "K6";
+NET "mcb3_dram_a[4]"       LOC = "F3";
+NET "mcb3_dram_a[5]"       LOC = "K3";
+NET "mcb3_dram_a[6]"       LOC = "J4";
+NET "mcb3_dram_a[7]"       LOC = "H6";
+NET "mcb3_dram_a[8]"       LOC = "E3";
+NET "mcb3_dram_a[9]"       LOC = "E1";
+NET "mcb3_dram_a[10]"      LOC = "G4";
+NET "mcb3_dram_a[11]"      LOC = "C1";
+NET "mcb3_dram_a[12]"      LOC = "D1";
+NET "mcb3_dram_ba[0]"      LOC = "G3";
+NET "mcb3_dram_ba[1]"      LOC = "G1";
+NET "mcb3_dram_ba[2]"      LOC = "F1";
+NET "mcb3_dram_cas_n"      LOC = "K4";
+NET "mcb3_dram_ck"         LOC = "H4";
+NET "mcb3_dram_ck_n"       LOC = "H3";
+NET "mcb3_dram_cke"        LOC = "D2";
+NET "mcb3_dram_dm"         LOC = "L4";
+NET "mcb3_dram_dq[0]"      LOC = "N3";
+NET "mcb3_dram_dq[1]"      LOC = "N1";
+NET "mcb3_dram_dq[2]"      LOC = "M2";
+NET "mcb3_dram_dq[3]"      LOC = "M1";
+NET "mcb3_dram_dq[4]"      LOC = "J3";
+NET "mcb3_dram_dq[5]"      LOC = "J1";
+NET "mcb3_dram_dq[6]"      LOC = "K2";
+NET "mcb3_dram_dq[7]"      LOC = "K1";
+NET "mcb3_dram_dq[8]"      LOC = "P2";
+NET "mcb3_dram_dq[9]"      LOC = "P1";
+NET "mcb3_dram_dq[10]"     LOC = "R3";
+NET "mcb3_dram_dq[11]"     LOC = "R1";
+NET "mcb3_dram_dq[12]"     LOC = "U3";
+NET "mcb3_dram_dq[13]"     LOC = "U1";
+NET "mcb3_dram_dq[14]"     LOC = "V2";
+NET "mcb3_dram_dq[15]"     LOC = "V1";
+NET "mcb3_dram_dqs"        LOC = "L3";
+NET "mcb3_dram_dqs_n"      LOC = "L1";
+NET "mcb3_dram_odt"        LOC = "J6";
+NET "mcb3_dram_ras_n"      LOC = "K5";
+NET "mcb3_dram_udm"        LOC = "M3";
+NET "mcb3_dram_udqs"       LOC = "T2";
+NET "mcb3_dram_udqs_n"     LOC = "T1";
+NET "mcb3_dram_we_n"       LOC = "F2";
+NET "mcb3_dram_cs_n"       LOC = "C3";
+NET "mcb3_rzq"             LOC = "K7";
+NET "mcb3_zio"             LOC = "Y2";

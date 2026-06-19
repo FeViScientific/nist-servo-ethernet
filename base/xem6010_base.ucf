@@ -1,0 +1,27 @@
+############################################################################
+# XEM6010 - Minimal base build constraints (clocks + Badger Ethernet only)
+############################################################################
+CONFIG VCCAUX = "3.3";
+
+NET "clk1_in"       LOC="AB13" | IOSTANDARD="LVCMOS33";
+NET "clk1_in"       TNM_NET = "SYS_CLK1";
+TIMESPEC "TS_SYS_CLK1" = PERIOD "SYS_CLK1" 10 ns HIGH 50%;
+
+# RMII PHY
+NET "phy_txd[1]"   LOC=C22 | IOSTANDARD=LVCMOS33 | DRIVE=12 | SLEW=SLOW;
+NET "phy_txd[0]"   LOC=C20 | IOSTANDARD=LVCMOS33 | DRIVE=12 | SLEW=SLOW;
+NET "phy_tx_en"    LOC=E22 | IOSTANDARD=LVCMOS33 | DRIVE=12 | SLEW=SLOW;
+NET "phy_clk_out"  LOC=E20 | IOSTANDARD=LVCMOS33 | DRIVE=12 | SLEW=FAST;
+NET "phy_crs_dv"   LOC=H22 | IOSTANDARD=LVCMOS33;
+NET "phy_rxd[0]"   LOC=F21 | IOSTANDARD=LVCMOS33;
+NET "phy_rxd[1]"   LOC=F22 | IOSTANDARD=LVCMOS33;
+
+# LEDs
+NET "led[0]"     LOC="Y17"  | IOSTANDARD=LVCMOS33;
+NET "led[1]"     LOC="AB17" | IOSTANDARD=LVCMOS33;
+NET "led[2]"     LOC="AA14" | IOSTANDARD=LVCMOS33;
+NET "led[3]"     LOC="AB14" | IOSTANDARD=LVCMOS33;
+NET "led[4]"     LOC="AA16" | IOSTANDARD=LVCMOS33;
+NET "led[5]"     LOC="AB16" | IOSTANDARD=LVCMOS33;
+NET "led[6]"     LOC="AA10" | IOSTANDARD=LVCMOS33;
+NET "led[7]"     LOC="AB10" | IOSTANDARD=LVCMOS33;

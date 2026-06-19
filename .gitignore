@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.pyc
+
+# Vendored Bedrock HDL library (LBNL) - has its own git repo
+Bedrock/
+
+# Xilinx ISE build directories
+xst/
+_ngo/
+_xmsgs/
+xlnx_auto_*/
+
+# Xilinx ISE build artifacts
+*.bgn
+*.bin
+*.bit
+*.bld
+*.drc
+*.lso
+*.ncd
+*.ngc
+*.ngc_xst.xrpt
+*.ngd
+*.ngm
+*.ngr
+*.pad
+*.par
+*.pcf
+*.prj
+*.ptwx
+*.syr
+*.unroutes
+*.xpi
+*.xst
+*.map
+*.mrp
+*.xrpt
+*.xwbt
+*.twr
+*_pad.csv
+*_pad.txt
+*_summary.xml
+*_usage.xml
+par_usage_statistics.html
+webtalk*.log
+webtalk*.html
+build.log
+
+# Test result outputs (generated)
+test_sim_results.txt
+test_offline_results.txt
+test_hardware_results.txt
+test_manual_results.txt
+
+# Python virtualenv
+venv/
+
+# Scratch ISE bring-up workspace (build artifacts, not source)
+base/
+
+# Ad-hoc bring-up logs / diagnostic results
+build_make.log
+full_log.txt
+*_results.txt

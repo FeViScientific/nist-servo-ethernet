@@ -1,0 +1,76 @@
+================================================================================
+ NETWORK IDENTITY & RECOVERY - QUICK MANUAL
+ SuperLaserLand servo FPGA (Opal Kelly XEM6010)
+================================================================================
+
+The FPGA stores its own MAC/IP in config flash (sector 61, magic "NCF1") and the
+boot loader (net_config_loader.v) applies it at power-up. If a bad/unreachable
+address is ever stored, a hardware loopback jumper forces the board back to a
+known default so it can always be rescued over the network.
+
+Defaults (compiled-in, also the recovery address):
+    IP  192.168.7.140
+    MAC AA:00:55:00:01:23
+
+All commands below use servo_cli.py. Add --host <IP> to target a specific
+address; the board only answers at whatever address it actually booted with.
+
+--------------------------------------------------------------------------------
+ READ THE CURRENT CONFIG
+--------------------------------------------------------------------------------
+    python servo_cli.py --host 192.168.7.140 net-config
+
+Prints two things:
+  "Stored network config: ..."   <- what is in flash; used on the NEXT normal boot
+  "Boot status: ... recovery_active=<bool>"
+
+  recovery_active=True  -> board is on the default 192.168.7.140 ONLY because the
+                           recovery jumper is installed; the stored value was
+                           ignored (NOT rewritten - flash is unchanged).
+  recovery_active=False -> board booted normally from the stored value.
+
+--------------------------------------------------------------------------------
+ CHANGE THE STORED IP/MAC
+--------------------------------------------------------------------------------
+    python servo_cli.py --host <current-IP> set-net-config <MAC> <IP>
+    e.g. python servo_cli.py --host 192.168.7.140 set-net-config AA:00:55:00:01:23 192.168.7.142
+
+  - Writes flash only; takes effect on the NEXT power-cycle / reprogram.
+  - Re-run net-config to confirm the "Stored ..." line updated.
+  - Reconnect at the new IP after the next boot.
+
+--------------------------------------------------------------------------------
+ RECOVERY (board unreachable / wrong IP stored)
+--------------------------------------------------------------------------------
+  1. Jumper DOUT[1] (pin L22) -> DIN[1] (pin D21). Seat it firmly.
+  2. Power-cycle or:  make program
+  3. python servo_cli.py --host 192.168.7.140 net-config
+        -> answers, recovery_active=True. You now have network access.
+  4. Overwrite the bad value with a good one (see "CHANGE" above). Pick an IP
+     that is NOT the default and NOT the host PC's address (see WARNING).
+  5. Remove the jumper, then: make program
+  6. python servo_cli.py --host <new-IP> net-config
+        -> recovery_active=False, stored = new IP. Recovered.
+
+Note: there is no JTAG-only way to fix just the config sector - set-net-config
+writes flash through the running gateware over the network, so you must regain
+network access (via recovery) first.
+
+--------------------------------------------------------------------------------
+ *** WARNING: never store the host PC's own IP ***
+--------------------------------------------------------------------------------
+On this bench the dev box is a QEMU/SLIRP VM (10.0.2.15) and ALL traffic to the
+board transits the physical host's FPGA-facing NIC at 192.168.7.4. Setting the
+FPGA's IP to 192.168.7.4 (the host's own address) caused an IP conflict that made
+the board unreachable from everywhere - worse than an ordinary bad IP, because it
+also wedged the host's network path (poisoned ARP / flapped interface).
+
+  - Never assign the FPGA the host's IP (192.168.7.4 here).
+  - Avoid .0 and .255 (network / broadcast).
+  - 192.168.7.142 is a known-good, conflict-free choice on this bench.
+
+If the host path is wedged by such a conflict, on the HOST: flush ARP
+(sudo ip neigh flush all) and confirm the host's interface still owns its IP,
+then perform the recovery procedure above.
+
+================================================================================
