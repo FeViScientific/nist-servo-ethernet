@@ -263,6 +263,15 @@ def adc16_to_volts(raw, vmin, vmax):
     return raw * (vmax - vmin) / (1 << 16)
 
 
+def volts_to_adc16(voltage, vmin, vmax):
+    """Inverse of adc16_to_volts: zero-centered 16-bit signed code for an
+    input-domain voltage (code 0 = 0 V). Use for the servo input offset, which
+    is subtracted from the ADC sample in hardware. NOT the same as
+    volts_to_raw16 (offset-binary, for DAC limit/sweep codes)."""
+    code = int(round(voltage * (1 << 16) / (vmax - vmin)))
+    return max(-32768, min(32767, code))
+
+
 def adc24_to_volts(raw, vmin, vmax):
     """Convert a 24-bit signed ADC sample to voltage (zero-centered).
 

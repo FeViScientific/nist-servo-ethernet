@@ -318,7 +318,8 @@ rtefi_blob #(
 //     lives in the FPGA -- the host (servo_device.py) implements M25P32.
 //
 // DAC registers (0x100):
-//   0x100-0x102: DAC0/1/2 value [23:0] signed (R/W, used when servo_on=0)
+//   0x100-0x102: DAC0/1/2 value [23:0] signed (R/W, used when servo_on=0;
+//                modulation sum (sweep/transfer/lock-in dither) rides on top)
 //   0x103: output gain (R/W)
 //   0x104: ramp enable (R/W)
 //
@@ -1821,27 +1822,48 @@ reg [23:0] dac2_clk1 = 24'd0;
 reg [1:0]  gain0_clk1 = 2'd0;
 reg [1:0]  gain1_clk1 = 2'd0;
 
+// Saturating signed add into the 24-bit DAC range. Used by the open-loop
+// (servo off) path so the modulation sum can ride on the manual setpoint
+// without wrapping at full scale. Input is wide enough for a 24-bit value
+// plus the 28-bit MODsum (SIGNAL_SIZE+4:0).
+function signed [SIGNAL_SIZE-1:0] sat24;
+    input signed [SIGNAL_SIZE+4:0] v;
+    begin
+        if (v > $signed({1'b0, {(SIGNAL_SIZE-1){1'b1}}}))        // > +2^23-1
+            sat24 = {1'b0, {(SIGNAL_SIZE-1){1'b1}}};            // 0x7FFFFF
+        else if (v < $signed({1'b1, {(SIGNAL_SIZE-1){1'b0}}}))  // < -2^23
+            sat24 = {1'b1, {(SIGNAL_SIZE-1){1'b0}}};           // 0x800000
+        else
+            sat24 = v[SIGNAL_SIZE-1:0];
+    end
+endfunction
+
 always @(posedge clk1) begin
+    // servo on  -> limited servo output (modulation already inside DACin)
+    // ramp test -> raw ramp counter
+    // servo off -> manual setpoint + modulation sum (sweep + transfer + lock-in
+    //              dither), saturated, so modulation/sweep work open-loop. Matches
+    //              the original NIST design, which always summed MODsum to the DAC.
     if (dsp_servo_on_clk1[0])
         dac0_clk1 <= DACin[0];
     else if (ramp_enable_clk1)
         dac0_clk1 <= ramp_counter;
     else
-        dac0_clk1 <= dac0_value;
+        dac0_clk1 <= sat24($signed(dac0_value) + $signed(MODsum[0]));
 
     if (dsp_servo_on_clk1[1])
         dac1_clk1 <= DACin[1];
     else if (ramp_enable_clk1)
         dac1_clk1 <= ramp_counter;
     else
-        dac1_clk1 <= dac1_value;
+        dac1_clk1 <= sat24($signed(dac1_value) + $signed(MODsum[1]));
 
     if (dsp_servo_on_clk1[2])
         dac2_clk1 <= DACin[2];
     else if (ramp_enable_clk1)
         dac2_clk1 <= ramp_counter;
     else
-        dac2_clk1 <= dac2_value;
+        dac2_clk1 <= sat24($signed(dac2_value) + $signed(MODsum[2]));
 
     gain0_clk1 <= dac_gain[1:0];
     gain1_clk1 <= dac_gain[3:2];

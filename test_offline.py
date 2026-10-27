@@ -206,7 +206,11 @@ def test_B5_B6_gui():
     roundtrip("OutputPanel-slow", lambda: g.OutputPanel(dev, 2),
               lambda p: (p.servo_btn.setChecked(True), p.iir0_group._w['freq'].setValue(999)))
     roundtrip("LockInPanel", lambda: g.LockInPanel(dev),
-              lambda p: (p.freq_spin.setValue(50000), p.pre_on.setChecked(True)))
+              lambda p: (p.freq_spin.setValue(50000), p.pre_iir.setChecked(True),
+                         p.pre_iir.type_combo.setCurrentIndex(2),  # Notch
+                         p.post_iir.setChecked(True),
+                         p.post_iir.type_combo.setCurrentIndex(4),  # Custom
+                         p.post_iir.coeff_widgets['b0'][1].setValue(12345)))
     roundtrip("PhaseDetPanel", lambda: g.PhaseDetPanel(dev),
               lambda p: (p.ext_clk.setChecked(True), p.lp_on.setChecked(True),
                          p.lp_gain.setValue(8)))
@@ -241,13 +245,106 @@ def test_B5_B6_gui():
         traceback.print_exc()
 
 
+def test_B9_startup_sync():
+    """After loading saved settings, every enabled GUI control must be enabled
+    in hardware too. Regression: quick-sweep (a momentary open-loop override)
+    used to be saved/restored, so on load it disabled the IIR/relock path in
+    hardware while their checkboxes still showed enabled -> GUI/hardware lie."""
+    print("B9: startup load drives hardware in sync with the GUI")
+    os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+    try:
+        from unittest.mock import MagicMock
+        from PyQt5.QtWidgets import QApplication
+    except Exception as e:
+        check("B9 Qt available", False, f"skipped: {e}")
+        return
+    from servo_device import ServoDevice as S
+    app = QApplication.instance() or QApplication(sys.argv)
+    import servo_gui as g
+
+    def mkwin(blob):
+        dev = MagicMock()
+        dev.read_input_gain.return_value = (0, 0)
+        dev.read_output_gain.return_value = (0, 0)
+        dev.GUI_SETTINGS_FLASH_ADDR = S.GUI_SETTINGS_FLASH_ADDR
+        dev.flash_load_blob.return_value = blob
+        dev.status.return_value = {'firmware_id': 0x201, 'pll_locked': True, 'rx_packets': 0,
+                                   'tx_packets': 0, 'uptime_ticks': 0, 'ad9783_pll_locked': True}
+        return g.MainWindow(dev), dev
+
+    def last_ch0(dev, name):
+        c = [x for x in dev.mock_calls if x[0] == name and x[1] and x[1][0] == 0]
+        return c[-1][1][1] if c else None   # the 'on' bool argument
+
+    # Build a saved blob with ch0 servo/IIR/relock on, then force a legacy
+    # quick_sweep=True key (simulating a config saved while quick-sweep ran).
+    w0, _ = mkwin(None)
+    for cb in [w0.aout0.servo_btn, w0.aout0.iir0_group, w0.aout0.iir1_group,
+               w0.aout0.relock_on]:
+        cb.setChecked(True)
+    d = w0.get_all_settings()
+    check("B9.0 quick_sweep not persisted", 'quick_sweep' not in d['aout'][0])
+    d['aout'][0]['quick_sweep'] = True            # inject legacy key
+    blob = json.dumps(d).encode()
+
+    w, dev = mkwin(blob)
+    check("B9.1 IIR0 on in HW matches GUI", last_ch0(dev, 'set_iir0') is True)
+    check("B9.2 IIR1 on in HW matches GUI", last_ch0(dev, 'set_iir1') is True)
+    check("B9.3 relock on in HW matches GUI", last_ch0(dev, 'set_relock') is True)
+    check("B9.4 servo on in HW matches GUI", last_ch0(dev, 'servo_on') is True)
+    check("B9.5 quick-sweep restored off", not w.aout0.quick_sweep.isChecked())
+
+    # Live: disengaging quick-sweep must restore the declared filter/relock path.
+    w.aout0.quick_sweep.setChecked(True)
+    dev.reset_mock()
+    w.aout0.quick_sweep.setChecked(False)
+    check("B9.6 disengage re-asserts IIR0", last_ch0(dev, 'set_iir0') is True)
+    check("B9.7 disengage re-asserts relock", last_ch0(dev, 'set_relock') is True)
+
+
+def test_B10_offset_encoding():
+    """Servo input offset must be zero-centered (ADC domain), not offset-binary
+    of the output DAC range. The old code used volts_to_raw16 with the output
+    range, which gave code -32768 at 0 V for ch2's unipolar AD5791 range and
+    broke locking."""
+    print("\n--- B10: servo input offset encoding ---")
+    from servo_device import (volts_to_adc16, adc16_to_volts, volts_to_raw16,
+                              INPUT_RANGES, OUTPUT_RANGES, AD5791_RANGE)
+
+    # 0 V must map to code 0 for every range, including the unipolar AD5791 range.
+    for r in list(INPUT_RANGES) + list(OUTPUT_RANGES) + [AD5791_RANGE]:
+        check(f"B10.1 0V -> code 0 for range {r}", volts_to_adc16(0.0, *r) == 0)
+
+    # Demonstrates the old bug vs the fix on the unipolar range.
+    check("B10.2 old path railed at 0V (volts_to_raw16 == -32768)",
+          volts_to_raw16(0.0, *AD5791_RANGE) == -32768)
+    check("B10.3 new path centered at 0V (volts_to_adc16 == 0)",
+          volts_to_adc16(0.0, *AD5791_RANGE) == 0)
+
+    # Round-trips against adc16_to_volts within the range (1 LSB tolerance).
+    for vmin, vmax in INPUT_RANGES:
+        lsb = (vmax - vmin) / (1 << 16)
+        for v in (vmin * 0.5, 0.0, vmax * 0.5, vmax * 0.9):
+            code = volts_to_adc16(v, vmin, vmax)
+            back = adc16_to_volts(code, vmin, vmax)
+            check(f"B10.4 round-trip {v:+.3f}V in {(vmin,vmax)}",
+                  abs(back - v) <= lsb, f"got {back:+.5f}V")
+
+    # Clamps to int16 instead of wrapping when over-ranged.
+    check("B10.5 clamps positive overrange",
+          volts_to_adc16(100.0, -0.5, 0.5) == 32767)
+    check("B10.6 clamps negative overrange",
+          volts_to_adc16(-100.0, -0.5, 0.5) == -32768)
+
+
 def main():
     print("=" * 64)
     print("OFFLINE TEST SUITE - flash/config/network features")
     print("=" * 64)
     for fn in [test_B1_config_regs, test_B2_register_snapshot, test_B3_gui_blob,
                test_B4_network_block, test_B7_sectors_and_byteorder, test_B5_B6_gui,
-               test_B8_dout_source]:
+               test_B8_dout_source, test_B9_startup_sync,
+               test_B10_offset_encoding]:
         try:
             fn()
         except Exception as e:

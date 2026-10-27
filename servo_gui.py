@@ -25,7 +25,7 @@ except ImportError:
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'firmware'))
 from servo_device import (
-    ServoDevice, iir1_coeffs, iir2_coeffs, volts_to_raw16,
+    ServoDevice, iir1_coeffs, iir2_coeffs, volts_to_raw16, volts_to_adc16,
     adc16_to_volts, adc24_to_volts,
     volts_to_dac24, dac24_to_volts, dac16_to_volts, sweep_params, sweep_to_freq,
     relock_stepsize, delay_us_to_cycles, freq_to_lockin_pinc,
@@ -40,8 +40,8 @@ from stream_recv import parse_packet
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGroupBox, QLabel, QComboBox, QPushButton, QDoubleSpinBox,
-    QCheckBox, QScrollArea, QSplitter, QStatusBar, QMessageBox,
+    QGroupBox, QLabel, QComboBox, QPushButton, QDoubleSpinBox, QGridLayout,
+    QSpinBox, QCheckBox, QScrollArea, QSplitter, QStatusBar, QMessageBox,
     QFileDialog, QAction, QMenuBar, QLineEdit,
 )
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QObject
@@ -627,6 +627,12 @@ class OutputPanel(QGroupBox):
         self.ch = ch
         self._updating = False
         self.is_slow = (ch == 2)
+        # Input panels (set by MainWindow via set_input_panels): used to encode
+        # the servo input offset in the ADC/input voltage range of the selected
+        # source. The offset is an ADC-domain quantity, independent of this
+        # channel's output DAC range.
+        self.ain0 = None
+        self.ain1 = None
         layout = QVBoxLayout(self)
 
         # Output range
@@ -662,6 +668,13 @@ class OutputPanel(QGroupBox):
         row = QHBoxLayout()
         self.quick_sweep = QCheckBox('Sweep')
         row.addWidget(self.quick_sweep)
+        row.addWidget(QLabel('Ctr:'))
+        self.qs_center = QDoubleSpinBox()
+        self.qs_center.setRange(-10, 10)
+        self.qs_center.setValue(0)
+        self.qs_center.setSuffix(' V')
+        self.qs_center.setDecimals(3)
+        row.addWidget(self.qs_center)
         row.addWidget(QLabel('Vpp:'))
         self.qs_ampl = QDoubleSpinBox()
         self.qs_ampl.setRange(0, 10)
@@ -679,8 +692,28 @@ class OutputPanel(QGroupBox):
         layout.addLayout(row)
 
         self.quick_sweep.toggled.connect(self._on_quick_sweep)
+        self.qs_center.valueChanged.connect(self._on_quick_sweep)
         self.qs_ampl.valueChanged.connect(self._on_quick_sweep)
         self.qs_freq.valueChanged.connect(self._on_quick_sweep)
+
+        # Modulation (lock-in dither): amplitude is per-output, carrier
+        # frequency/phase come from the LOCKIN panel. Matches the original GUI's
+        # output "Modulation" block (a single "LOCKIN: <dB>" amplitude control).
+        row = QHBoxLayout()
+        self.mod_on = QCheckBox('Modulation')
+        row.addWidget(self.mod_on)
+        row.addWidget(QLabel('LOCKIN:'))
+        self.mod_ampl = QSpinBox()
+        self.mod_ampl.setRange(0, 24)
+        self.mod_ampl.setSingleStep(1)
+        self.mod_ampl.setValue(1)
+        self.mod_ampl.setSuffix(' dB')
+        row.addWidget(self.mod_ampl)
+        row.addWidget(QLabel('(carrier: LOCKIN freq)'))
+        layout.addLayout(row)
+
+        self.mod_on.toggled.connect(self._on_mod_changed)
+        self.mod_ampl.valueChanged.connect(self._on_mod_changed)
 
         # Output limits
         row = QHBoxLayout()
@@ -868,6 +901,25 @@ class OutputPanel(QGroupBox):
         if self.is_slow: return AD5791_RANGE
         return OUTPUT_RANGES[self.range_combo.currentIndex()]
 
+    def set_input_panels(self, ain0, ain1):
+        """Register the AIN panels so the servo input offset can be encoded in
+        the input (ADC/PGA) voltage range of the currently selected source."""
+        self.ain0 = ain0
+        self.ain1 = ain1
+
+    def _input_range(self):
+        """Input voltage range for the currently selected servo input source.
+
+        The offset is subtracted from the ADC sample in hardware, so it lives in
+        the input/ADC domain (zero-centered), NOT this channel's output DAC range.
+        Falls back to AIN0's range for non-ADC sources (any symmetric range works;
+        what matters is zero-centering so 0 V maps to code 0)."""
+        src = self.input_combo.currentData()
+        panel = self.ain1 if src == INPUT_ADC1 else self.ain0
+        if panel is not None:
+            return INPUT_RANGES[panel.range_combo.currentIndex()]
+        return INPUT_RANGES[-1]  # widest input range if panels not wired yet
+
     @safe_callback
     def _on_range_changed(self, *_):
         if self._updating or self.is_slow:
@@ -892,7 +944,17 @@ class OutputPanel(QGroupBox):
     def _on_quick_sweep(self, *_):
         if self._updating: return
         if not self.quick_sweep.isChecked():
-            self.dev.set_sweep(self.ch, False); self.dev.servo_on(self.ch, False); return
+            # Quick-sweep is a momentary open-loop override: it bypassed the
+            # IIR/relock/limit path in hardware while leaving those GUI controls
+            # untouched. On disengage, re-assert the GUI's declared servo config
+            # so the controls and the hardware agree again (instead of leaving
+            # the filters silently disabled).
+            self._on_iir_changed()
+            self._on_relock_changed()
+            self._on_limits_changed()
+            self._on_sweep_changed()
+            self._on_servo_toggled(self.servo_btn.isChecked())
+            return
         vmin, vmax = self._get_range()
         self.dev.set_iir0(self.ch, False)
         self.dev.set_iir1(self.ch, False, a1=0, b0=0, b1=0)
@@ -902,10 +964,22 @@ class OutputPanel(QGroupBox):
         self.dev.set_relock(self.ch, False)
         self.dev.set_limits(self.ch, -RAW16_FULLSCALE, RAW16_FULLSCALE)
         try:
-            mn, mx, step = sweep_params(0, self.qs_ampl.value(), self.qs_freq.value(), vmin, vmax)
+            mn, mx, step = sweep_params(self.qs_center.value(), self.qs_ampl.value(),
+                                        self.qs_freq.value(), vmin, vmax)
             self.dev.set_sweep(self.ch, True, min_val=mn, max_val=mx, stepsize=step)
         except Exception: pass
         self.dev.servo_on(self.ch, True)
+
+    @safe_callback
+    def _on_mod_changed(self, *_):
+        if self._updating: return
+        # ch_lo_shift right-shift on the lock-in LO: 0 dB -> 24, 24 dB -> 0,
+        # off -> 31 (matches the original GUI's 24 - amplitude_dB mapping).
+        if self.mod_on.isChecked():
+            shift = 24 - int(self.mod_ampl.value())
+        else:
+            shift = 31
+        self.dev.set_lo_shift(self.ch, shift)
 
     @safe_callback
     def _on_servo_toggled(self, on):
@@ -925,8 +999,8 @@ class OutputPanel(QGroupBox):
         if self._updating: return
         self.dev.set_input_mux(self.ch, self.input_combo.currentData(),
                                 self.sign_combo.currentIndex() == 1)
-        vmin, vmax = self._get_range()
-        self.dev.set_offset(self.ch, volts_to_raw16(self.offset_spin.value(), vmin, vmax))
+        vmin, vmax = self._input_range()
+        self.dev.set_offset(self.ch, volts_to_adc16(self.offset_spin.value(), vmin, vmax))
 
     @safe_callback
     def _on_iir_changed(self, *_):
@@ -1019,8 +1093,13 @@ class OutputPanel(QGroupBox):
     def get_settings(self):
         s = {
             'range': self.range_combo.currentIndex(),
-            'quick_sweep': self.quick_sweep.isChecked(),
+            # Quick-sweep is a momentary open-loop diagnostic, not part of the
+            # persistent servo configuration, so it is deliberately NOT saved.
+            # (Restoring it on load would re-bypass the filter path while the
+            # IIR/relock checkboxes show enabled -> GUI/hardware desync.)
+            'qs_center': self.qs_center.value(),
             'qs_ampl': self.qs_ampl.value(), 'qs_freq': self.qs_freq.value(),
+            'mod_on': self.mod_on.isChecked(), 'mod_ampl': self.mod_ampl.value(),
             'limit_min': self.limit_min.value(), 'limit_max': self.limit_max.value(),
             'servo': self.servo_btn.isChecked(),
             'sign': self.sign_combo.currentIndex(),
@@ -1049,9 +1128,15 @@ class OutputPanel(QGroupBox):
         self._updating = True
         try:
             self.range_combo.setCurrentIndex(s.get('range', self.range_combo.currentIndex()))
-            self.quick_sweep.setChecked(s.get('quick_sweep', False))
+            # Always restore with quick-sweep disengaged: it is a momentary
+            # override and must never come back on at load (it would bypass the
+            # filters in hardware while the IIR/relock controls show enabled).
+            self.quick_sweep.setChecked(False)
+            self.qs_center.setValue(s.get('qs_center', self.qs_center.value()))
             self.qs_ampl.setValue(s.get('qs_ampl', self.qs_ampl.value()))
             self.qs_freq.setValue(s.get('qs_freq', self.qs_freq.value()))
+            self.mod_on.setChecked(s.get('mod_on', False))
+            self.mod_ampl.setValue(s.get('mod_ampl', self.mod_ampl.value()))
             self.limit_min.setValue(s.get('limit_min', self.limit_min.value()))
             self.limit_max.setValue(s.get('limit_max', self.limit_max.value()))
             self.servo_btn.setChecked(s.get('servo', False))
@@ -1076,8 +1161,9 @@ class OutputPanel(QGroupBox):
             self.center_railed.setChecked(s.get('center_railed', False))
         finally:
             self._updating = False
-        # Push restored values to hardware (servo enabled last; quick-sweep,
-        # if it was the active mode, overrides afterwards).
+        # Push every restored value to hardware so the controls and the device
+        # agree (servo enabled last). Quick-sweep is forced off above, so the
+        # declarative filter/relock/sweep state below is what actually lands.
         self._on_range_changed()
         self._on_input_changed()
         self._on_iir_changed()
@@ -1085,14 +1171,142 @@ class OutputPanel(QGroupBox):
         self._on_hold_changed()
         self._on_sweep_changed()
         self._on_relock_changed()
+        self._on_mod_changed()
         self._on_servo_toggled(self.servo_btn.isChecked())
-        if self.quick_sweep.isChecked():
-            self._on_quick_sweep()
 
 
 ###############################################################################
 # LockIn panel
 ###############################################################################
+
+class IIR2FilterBox(QGroupBox):
+    """Reusable 2nd-order IIR filter control, mirroring the original GUI's
+    IIRfilter2ndOrder widget: an on/off checkable group with a type combo
+    (Low pass / High pass / Notch / P / Custom), corner freq, Q and gain for
+    the analytic types, and raw 35-bit a1/a2/b0/b1/b2 entry in Custom mode.
+
+    coeffs() returns the {a1,a2,b0,b1,b2} dict ready for set_lockin_iir*().
+    Emits `changed` whenever the enable state or any parameter changes.
+    """
+    TYPES = ['Low pass', 'High pass', 'Notch', 'P', 'Custom']
+    # combo text (lowercased) -> iir2_coeffs filter_type
+    TMAP = {'low pass': 'lowpass', 'high pass': 'highpass', 'notch': 'notch', 'p': 'p'}
+    COEFF_NAMES = ['a1', 'a2', 'b0', 'b1', 'b2']
+    COEFF_MIN, COEFF_MAX = -(1 << 34), (1 << 34) - 1   # 35-bit signed, matches RTL
+    changed = pyqtSignal()
+
+    def __init__(self, title, a0_shift=32, update_every=26, parent=None):
+        super().__init__(title, parent)
+        self.setCheckable(True); self.setChecked(False)
+        self.a0_shift = a0_shift
+        self.update_every = update_every
+        self._updating = False
+        self._prev_type = self.TYPES[0].lower()
+        v = QVBoxLayout(self)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Type:'))
+        self.type_combo = QComboBox(); self.type_combo.addItems(self.TYPES)
+        row.addWidget(self.type_combo); v.addLayout(row)
+
+        row = QHBoxLayout()
+        self.freq_label = QLabel('F:'); row.addWidget(self.freq_label)
+        self.freq = QDoubleSpinBox(); self.freq.setRange(0.01, 10e6)
+        self.freq.setValue(1000); self.freq.setSuffix(' Hz'); row.addWidget(self.freq)
+        self.q_label = QLabel('Q:'); row.addWidget(self.q_label)
+        self.q = QDoubleSpinBox(); self.q.setRange(0.01, 100)
+        self.q.setValue(0.707); self.q.setDecimals(3); row.addWidget(self.q)
+        self.gain_label = QLabel('G:'); row.addWidget(self.gain_label)
+        self.gain = QDoubleSpinBox(); self.gain.setRange(-200, 200)
+        self.gain.setSuffix(' dB'); row.addWidget(self.gain)
+        v.addLayout(row)
+
+        # Raw coefficient entry (Custom mode). QDoubleSpinBox with 0 decimals
+        # holds the full 35-bit signed range exactly (well within double's 2^53).
+        self.coeff_widgets = {}
+        grid = QGridLayout()
+        for i, name in enumerate(self.COEFF_NAMES):
+            lbl = QLabel(name + ':')
+            sp = QDoubleSpinBox(); sp.setDecimals(0)
+            sp.setRange(float(self.COEFF_MIN), float(self.COEFF_MAX))
+            sp.setGroupSeparatorShown(True)
+            grid.addWidget(lbl, i // 2, (i % 2) * 2)
+            grid.addWidget(sp, i // 2, (i % 2) * 2 + 1)
+            self.coeff_widgets[name] = (lbl, sp)
+        v.addLayout(grid)
+
+        self.toggled.connect(self._emit)
+        self.type_combo.currentIndexChanged.connect(self._on_type_changed)
+        for w in (self.freq, self.q, self.gain):
+            w.valueChanged.connect(self._emit)
+        for _, sp in self.coeff_widgets.values():
+            sp.valueChanged.connect(self._emit)
+
+        self._update_visibility()
+
+    def _emit(self, *_):
+        if not self._updating:
+            self.changed.emit()
+
+    def _on_type_changed(self, *_):
+        new = self.type_combo.currentText().lower()
+        # Seed the raw boxes from the previously selected analytic filter so
+        # Custom starts from the active response instead of all-zeros.
+        if new == 'custom' and self._prev_type in self.TMAP and not self._updating:
+            c = iir2_coeffs(self.TMAP[self._prev_type], self.freq.value(), Q=self.q.value(),
+                            gain_db=self.gain.value(), a0_shift=self.a0_shift,
+                            update_every=self.update_every, fs=DSP_CLK_HZ)
+            self._updating = True
+            for name, (_, sp) in self.coeff_widgets.items():
+                sp.setValue(c[name])
+            self._updating = False
+        self._prev_type = new
+        self._update_visibility()
+        self._emit()
+
+    def _update_visibility(self):
+        t = self.type_combo.currentText().lower()
+        custom = (t == 'custom')
+        show_fq = not custom and t != 'p'
+        self.freq_label.setVisible(show_fq); self.freq.setVisible(show_fq)
+        self.q_label.setVisible(show_fq); self.q.setVisible(show_fq)
+        self.gain_label.setVisible(not custom); self.gain.setVisible(not custom)
+        for lbl, sp in self.coeff_widgets.values():
+            lbl.setVisible(custom); sp.setVisible(custom)
+
+    def coeffs(self):
+        """Return {a1,a2,b0,b1,b2} for the current filter type."""
+        t = self.type_combo.currentText().lower()
+        if t == 'custom':
+            return {name: int(round(sp.value()))
+                    for name, (_, sp) in self.coeff_widgets.items()}
+        return iir2_coeffs(self.TMAP[t], self.freq.value(), Q=self.q.value(),
+                           gain_db=self.gain.value(), a0_shift=self.a0_shift,
+                           update_every=self.update_every, fs=DSP_CLK_HZ)
+
+    def get_settings(self):
+        return {'on': self.isChecked(), 'type': self.type_combo.currentIndex(),
+                'freq': self.freq.value(), 'q': self.q.value(), 'gain': self.gain.value(),
+                'coeffs': {name: int(round(sp.value()))
+                           for name, (_, sp) in self.coeff_widgets.items()}}
+
+    def apply_settings(self, s):
+        """Load settings without emitting; caller pushes config afterwards."""
+        self._updating = True
+        try:
+            self.setChecked(s.get('on', False))
+            self.type_combo.setCurrentIndex(s.get('type', 0))
+            self.freq.setValue(s.get('freq', self.freq.value()))
+            self.q.setValue(s.get('q', self.q.value()))
+            self.gain.setValue(s.get('gain', 0.0))
+            for name, val in s.get('coeffs', {}).items():
+                if name in self.coeff_widgets:
+                    self.coeff_widgets[name][1].setValue(val)
+            self._prev_type = self.type_combo.currentText().lower()
+            self._update_visibility()
+        finally:
+            self._updating = False
+
 
 class LockInPanel(QGroupBox):
     def __init__(self, dev, parent=None):
@@ -1112,27 +1326,18 @@ class LockInPanel(QGroupBox):
         self.phase_spin = QDoubleSpinBox(); self.phase_spin.setRange(0, 360); self.phase_spin.setSuffix(' deg')
         row.addWidget(self.phase_spin)
         layout.addLayout(row)
-        row = QHBoxLayout()
-        self.pre_on = QCheckBox('Pre LP'); row.addWidget(self.pre_on)
-        self.pre_freq = QDoubleSpinBox(); self.pre_freq.setRange(0.01, 10e6); self.pre_freq.setValue(1000); self.pre_freq.setSuffix(' Hz')
-        row.addWidget(self.pre_freq)
-        self.pre_q = QDoubleSpinBox(); self.pre_q.setRange(0.01, 100); self.pre_q.setValue(0.707)
-        row.addWidget(QLabel('Q:')); row.addWidget(self.pre_q)
-        layout.addLayout(row)
-        row = QHBoxLayout()
-        self.post_on = QCheckBox('Post LP'); row.addWidget(self.post_on)
-        self.post_freq = QDoubleSpinBox(); self.post_freq.setRange(0.01, 10e6); self.post_freq.setValue(1000); self.post_freq.setSuffix(' Hz')
-        row.addWidget(self.post_freq)
-        self.post_q = QDoubleSpinBox(); self.post_q.setRange(0.01, 100); self.post_q.setValue(0.707)
-        row.addWidget(QLabel('Q:')); row.addWidget(self.post_q)
-        layout.addLayout(row)
+        # Input (pre-demod) and output (post-demod) 2nd-order IIR filters,
+        # each with the full set of types from the original GUI.
+        self.pre_iir = IIR2FilterBox('Input IIR', a0_shift=32, update_every=26)
+        self.post_iir = IIR2FilterBox('Output IIR', a0_shift=32, update_every=26)
+        layout.addWidget(self.pre_iir); layout.addWidget(self.post_iir)
         self.readback = QLabel('LOCKIN: ---'); self.readback.setFont(QFont('monospace', 9))
         layout.addWidget(self.readback)
-        for w in [self.input_combo, self.freq_spin, self.phase_spin, self.pre_on,
-                  self.pre_freq, self.pre_q, self.post_on, self.post_freq, self.post_q]:
-            if hasattr(w, 'toggled'): w.toggled.connect(self._on_changed)
-            elif hasattr(w, 'valueChanged'): w.valueChanged.connect(self._on_changed)
-            elif hasattr(w, 'currentIndexChanged'): w.currentIndexChanged.connect(self._on_changed)
+        self.input_combo.currentIndexChanged.connect(self._on_changed)
+        self.freq_spin.valueChanged.connect(self._on_changed)
+        self.phase_spin.valueChanged.connect(self._on_changed)
+        self.pre_iir.changed.connect(self._on_changed)
+        self.post_iir.changed.connect(self._on_changed)
 
     @safe_callback
     def _on_changed(self, *_):
@@ -1141,22 +1346,16 @@ class LockInPanel(QGroupBox):
         pinc = freq_to_lockin_pinc(self.freq_spin.value())
         poff = deg_to_lockin_poff(self.phase_spin.value())
         self.dev.set_lockin_nco(pinc, poff)
-        c = iir2_coeffs('lowpass', self.pre_freq.value(), Q=self.pre_q.value(),
-                         a0_shift=32, update_every=26, fs=DSP_CLK_HZ)
-        self.dev.set_lockin_iir0(self.pre_on.isChecked(), **c)
-        c = iir2_coeffs('lowpass', self.post_freq.value(), Q=self.post_q.value(),
-                         a0_shift=32, update_every=26, fs=DSP_CLK_HZ)
-        self.dev.set_lockin_iir1(self.post_on.isChecked(), **c)
+        self.dev.set_lockin_iir0(self.pre_iir.isChecked(), **self.pre_iir.coeffs())
+        self.dev.set_lockin_iir1(self.post_iir.isChecked(), **self.post_iir.coeffs())
 
     def update_readback(self, out, lo):
         self.readback.setText(f'Out: {out:+8d}  LO: {lo:+8d}')
 
     def get_settings(self):
         return {'input': self.input_combo.currentIndex(), 'freq': self.freq_spin.value(),
-                'phase': self.phase_spin.value(), 'pre_on': self.pre_on.isChecked(),
-                'pre_freq': self.pre_freq.value(), 'pre_q': self.pre_q.value(),
-                'post_on': self.post_on.isChecked(), 'post_freq': self.post_freq.value(),
-                'post_q': self.post_q.value()}
+                'phase': self.phase_spin.value(),
+                'pre': self.pre_iir.get_settings(), 'post': self.post_iir.get_settings()}
 
     def apply_settings(self, s):
         self._updating = True
@@ -1164,15 +1363,20 @@ class LockInPanel(QGroupBox):
             self.input_combo.setCurrentIndex(s.get('input', self.input_combo.currentIndex()))
             self.freq_spin.setValue(s.get('freq', self.freq_spin.value()))
             self.phase_spin.setValue(s.get('phase', self.phase_spin.value()))
-            self.pre_on.setChecked(s.get('pre_on', False))
-            self.pre_freq.setValue(s.get('pre_freq', self.pre_freq.value()))
-            self.pre_q.setValue(s.get('pre_q', self.pre_q.value()))
-            self.post_on.setChecked(s.get('post_on', False))
-            self.post_freq.setValue(s.get('post_freq', self.post_freq.value()))
-            self.post_q.setValue(s.get('post_q', self.post_q.value()))
+            self.pre_iir.apply_settings(self._iir_settings(s, 'pre'))
+            self.post_iir.apply_settings(self._iir_settings(s, 'post'))
         finally:
             self._updating = False
         self._on_changed()
+
+    @staticmethod
+    def _iir_settings(s, which):
+        """Accept the new nested format or migrate the old flat lowpass-only keys."""
+        nested = s.get(which)
+        if isinstance(nested, dict):
+            return nested
+        return {'on': s.get(f'{which}_on', False), 'type': 0,
+                'freq': s.get(f'{which}_freq', 1000), 'q': s.get(f'{which}_q', 0.707)}
 
 
 ###############################################################################
@@ -1417,6 +1621,8 @@ class MainWindow(QMainWindow):
         self.scope = ScopePlot()
         self.scope.set_panels(self.ain0, self.ain1,
                               self.aout0, self.aout1, self.aout2)
+        for aout in (self.aout0, self.aout1, self.aout2):
+            aout.set_input_panels(self.ain0, self.ain1)
 
         splitter.addWidget(left_scroll)
         splitter.addWidget(mid_scroll)

@@ -8,6 +8,7 @@ Usage:
     python3 servo_cli.py dac set 0 0.1          # AOUT0 = 0.1V
     python3 servo_cli.py dac zero                # all DACs to 0
     python3 servo_cli.py sweep 0 0.5 200         # AOUT0: 0.5V peak-to-peak, 200 Hz
+    python3 servo_cli.py sweep 0 0.5 200 1.0     # ... centered at 1.0V
     python3 servo_cli.py sweep off 0             # stop sweep on ch0
     python3 servo_cli.py dout 0 sync 0           # DOUT0 = ch0 sweep sync (rising-half high)
     python3 servo_cli.py dout 0 status           # DOUT0 = relock-hold status (default)
@@ -19,6 +20,8 @@ Usage:
     python3 servo_cli.py mux 1 0                 # ch1 input = ADC0
     python3 servo_cli.py mux 1 0 invert          # ch1 input = -ADC0
     python3 servo_cli.py limits 1 -0.5 0.5       # ch1 limits +/-0.5V
+    python3 servo_cli.py modulation 0 on 12 50000 # ch0 dither 12dB, 50kHz carrier
+    python3 servo_cli.py modulation 0 off         # stop ch0 modulation
     python3 servo_cli.py led                      # test LEDs
     python3 servo_cli.py reset                    # reset all to safe state
     python3 servo_cli.py snapshot                 # full status dump
@@ -34,7 +37,7 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 from servo_device import (
     ServoDevice, iir1_coeffs, iir2_coeffs, sweep_params,
-    volts_to_dac24, dac24_to_volts, volts_to_raw16,
+    volts_to_dac24, dac24_to_volts, volts_to_raw16, volts_to_adc16,
     OUTPUT_RANGES, INPUT_RANGES, AD5791_RANGE, DSP_CLK_HZ,
     INPUT_ADC0, INPUT_ADC1, INPUT_ADCDIFF, INPUT_LOCKIN, INPUT_PHASEDET,
     INPUT_DAC0, INPUT_DAC1, INPUT_DAC2,
@@ -93,7 +96,7 @@ def cmd_dac(dev, args):
 
 def cmd_sweep(dev, args):
     if not args:
-        print("Usage: sweep <ch> <Vpp_V> <freq_Hz>  or  sweep off [ch]")
+        print("Usage: sweep <ch> <Vpp_V> <freq_Hz> [center_V]  or  sweep off [ch]")
         return
     if args[0] == 'off':
         channels = [int(args[1])] if len(args) > 1 else [0, 1, 2]
@@ -106,6 +109,7 @@ def cmd_sweep(dev, args):
     ch = int(args[0])
     vpp = float(args[1])
     freq = float(args[2])
+    center = float(args[3]) if len(args) > 3 else 0.0
     vmin, vmax = get_output_range(ch)
 
     # Disable IIRs so sweep passes through cleanly
@@ -117,10 +121,11 @@ def cmd_sweep(dev, args):
     dev.set_relock(ch, False)
     dev.set_limits(ch, -0x7FFF, 0x7FFF)
 
-    mn, mx, step = sweep_params(0, vpp, freq, vmin, vmax)
+    mn, mx, step = sweep_params(center, vpp, freq, vmin, vmax)
     dev.set_sweep(ch, True, min_val=mn, max_val=mx, stepsize=step)
     dev.servo_on(ch, True)
-    print(f"AOUT{ch}: sweep {vpp} Vpp @ {freq} Hz  (min={mn}, max={mx}, step={step})")
+    print(f"AOUT{ch}: sweep {vpp} Vpp @ {freq} Hz, center {center} V  "
+          f"(min={mn}, max={mx}, step={step})")
 
 
 def cmd_servo(dev, args):
@@ -212,13 +217,18 @@ def cmd_limits(dev, args):
 
 
 def cmd_offset(dev, args):
-    """Set input offset: offset <ch> <voltage>"""
+    """Set input offset: offset <ch> <voltage> (input volts, AIN0 PGA range)"""
     if len(args) < 2:
         print("Usage: offset <ch> <voltage>")
         return
     ch = int(args[0])
-    vmin, vmax = get_output_range(ch)
-    raw = volts_to_raw16(float(args[1]), vmin, vmax)
+    # The offset is subtracted from the ADC sample in hardware, so it is an
+    # ADC/input-domain (zero-centered) quantity, NOT an output-DAC voltage.
+    # cmd_offset doesn't track the selected input source, so default to the
+    # AIN0 PGA range.
+    gain0, _gain1 = dev.read_input_gain()
+    vmin, vmax = INPUT_RANGES[gain0]
+    raw = volts_to_adc16(float(args[1]), vmin, vmax)
     dev.set_offset(ch, raw)
     print(f"Ch{ch} offset: {args[1]} V")
 
@@ -447,6 +457,44 @@ def cmd_dout(dev, args):
         print('Usage: dout <pin> status   |   dout <pin> sync <ch>')
 
 
+def cmd_modulation(dev, args):
+    """modulation <ch> on <amp_db> [freq_hz] [phase_deg] | modulation <ch> off
+
+    Lock-in dither on a channel output. Amplitude (0-24 dB) maps to the
+    per-channel LO right-shift as shift = 24 - amp_db (off -> 31). The carrier
+    is the shared lock-in NCO; pass freq_hz/phase_deg to set it, or omit to keep
+    the current carrier.
+    """
+    if len(args) < 2:
+        print("Usage: modulation <ch> on <amp_db> [freq_hz] [phase_deg]")
+        print("       modulation <ch> off")
+        return
+    ch = int(args[0])
+    if args[1].lower() == 'off':
+        dev.set_lo_shift(ch, 31)
+        print(f"Ch{ch} modulation OFF")
+        return
+    amp_db = float(args[2]) if len(args) > 2 else 1.0
+    shift = max(0, 24 - int(round(amp_db)))
+    dev.set_lo_shift(ch, shift)
+    msg = f"Ch{ch} modulation ON: {amp_db:.0f} dB (shift={shift})"
+    if len(args) > 3:
+        freq = float(args[3])
+        phase = float(args[4]) if len(args) > 4 else 0.0
+        dev.set_lockin_freq(freq, phase)
+        msg += f", carrier {freq:g} Hz @ {phase:g} deg"
+    else:
+        # No carrier supplied: warn if the lock-in NCO is parked at 0 Hz, which
+        # produces a DC offset (no dither) regardless of amplitude.
+        from servo_device import lockin_pinc_to_freq
+        cur = lockin_pinc_to_freq(dev.read(0x601) & 0xFFFFFF)
+        if cur == 0:
+            msg += " -- WARNING: carrier is 0 Hz (DC, no dither); pass freq_hz"
+        else:
+            msg += f", carrier {cur:g} Hz (unchanged)"
+    print(msg)
+
+
 def cmd_save_config(dev, args):
     """Snapshot the current register config to flash."""
     print("Saving config to flash (erase + program + verify)...")
@@ -481,6 +529,7 @@ COMMANDS = {
     'monitor': cmd_monitor,
     'passthrough': cmd_passthrough,
     'dout': cmd_dout,
+    'modulation': cmd_modulation,
     'flash-id': cmd_flash_id,
     'save-config': cmd_save_config,
     'load-config': cmd_load_config,
